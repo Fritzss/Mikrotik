@@ -22,7 +22,7 @@
 
 # script is needed for Dual Wan or Multi Wan to fix static routes
 
-# the script must be added to each wan interface with its own label
+# the script must be added to each wan interface with its own comment
 
 
 
