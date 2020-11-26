@@ -1,6 +1,6 @@
 # multi wan dhcp-client
 
-/ip dhcp-client add default-route-distance=5 disabled=no interface=ether5 script="{:local rmark \"R_ISP1\"\r\
+/ip dhcp-client add default-route-distance=5 disabled=no interface=ether1 script="{:local rmark \"R_ISP1\"\r\
     \n   /log info message=\$rmark\r\
     \n  :local countrule [/ip route rule print count-only where comment=\$rmark]\r\
     \n  :local countroute [/ip route print count-only where routing-mark=\$rmark]\r\
