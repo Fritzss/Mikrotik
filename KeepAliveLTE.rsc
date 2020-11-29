@@ -1,3 +1,5 @@
+# Up LTE if pptp down over LTE
+
 /ppp profile add change-tcp-mss=yes name=pr_PPTP on-down="/log info message=\"script KeepAliveLte started pptp\"\r\
     \n/system script run scr_KeepAliveLTE\r\
     \n\r\
@@ -36,4 +38,4 @@
     \nif ((\$ST - \$ET) > 1h) do={/log info message=\"system reboot\" }\r\
     \n}} else={/log info message=\"pptp Ok\" }\r\
     \n}}"
-    # Up LTE if down pptp over LTE
+    
