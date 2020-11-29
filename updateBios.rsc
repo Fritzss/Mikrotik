@@ -1,3 +1,4 @@
+#update BIOS after update firmware
 /system scheduler add name=upgrade-bios on-event="/system script run update-bios" policy=ftp,reboot,read,write,policy,test,password,sniff,sensitive start-time=startup
 
 /system script add dont-require-permissions=no name=update-bios owner=admin policy=ftp,reboot,read,write,policy,test,password,sniff,sensitive source="{\r\
