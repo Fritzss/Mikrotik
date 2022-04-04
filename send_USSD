@@ -1,0 +1,23 @@
+/system script add dont-require-permissions=no name=send_USSD owner=Fritz policy=ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon source=":local ussd \"*101#\";\r\
+    \n#:local ussd \"*205#\";\r\
+    \n:local lteMode [/interface lte get [find name=\"lte1\"] network-mode];\r\
+    \n\r\
+    \n:if ([:typeof [:find \$lteMode \"3g\"]] = \"nil\") do={\r\
+    \n  :log info \"Switching to 3G-mode before send USSD...\";\r\
+    \n  /interface lte set [find name=\"lte1\"] network-mode=\"3g\";\r\
+    \n  :log info \"Waiting 60 seconds...\";\r\
+    \n  :delay 60;\r\
+    \n}\r\
+    \n\r\
+    \n:log info \"Sending USSD request \$ussd\";\r\
+    \n/interface lte at-chat lte1 input=\"AT+CUSD=1,\\\"\$ussd\\\",15\";\r\
+    \n\r\
+    \n:if ([:typeof [:find \$lteMode \"3g\"]] = \"nil\") do={\r\
+    \n  :log info \"Waiting 120 seconds for SMS...\";\r\
+    \n  :delay 120;\r\
+    \n}\r\
+    \n\r\
+    \n:if ([:typeof [:find \$lteMode \"3g\"]] = \"nil\") do={\r\
+    \n  :log info \"Returning to 4G-mode.\";\r\
+    \n  /interface lte set [find name=\"lte1\"] network-mode=\$lteMode;\r\
+    \n}"
