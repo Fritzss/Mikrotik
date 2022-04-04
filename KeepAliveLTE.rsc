@@ -11,7 +11,7 @@
     \n:global int \$int\r\
     \n:global count 0\r\
     \n:global upt [system resource get uptime]\r\
-    \nif  (\$upt < 5m) do={:delay 300 }\r\
+    \nif (\$upt < 5m) do={:delay 300 }\r\
     \n{\r\
     \n/log info message=\"script KeepAliveLte started\"\r\
     \n:foreach i in=[/system script job find script=scr_KeepAliveLTE] do={:put \$i; set count (\$count +1)}\r\
