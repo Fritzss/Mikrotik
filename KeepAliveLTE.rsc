@@ -33,7 +33,8 @@
     \n /log info message=\"usb power-reset\";\r\
     \n /system routerboard usb power-reset duration=5;\r\
     \n:delay 200\r\
-    \nif ([len \$gr] = 0) do={/system reboot}\r\
+    \n:local lt [/interface lte find]\r\
+    \nif ([:len \$lt] = 0) do={/system reboot}\r\
     \nwhile condition=([/interface lte get [find] disabled]) do={/interface lte enable [find]; :delay 1}\r\
     \n:global ET [/system clock get time]\r\
     \n/log info message=\"end Time \$ET\"\r\
@@ -43,3 +44,4 @@
     \n}\r\
     \n}\r\
     \n"
+
