@@ -3,8 +3,7 @@
 /ppp profile add change-tcp-mss=yes name=pr_PPTP on-down=":global int\r\
     \n:set int [/interface get \$interface name]\r\
     \n/log info message=\"script profile pptp interface \$int down\" \r\
-    \n/system script run scr_KeepAliveLTE" on-up="foreach i in=[/system script job
- find script=scr_KeepAliveLTE ] do={/system script job remove \$i} \r\
+    \n/system script run scr_KeepAliveLTE" on-up="foreach i in=[/system script job find script=scr_KeepAliveLTE ] do={/system script job remove \$i} \r\
     \n/system script environment remove [find]" use-compression=yes use-encryption=yes use-mpls=no
 
 
