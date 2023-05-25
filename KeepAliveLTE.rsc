@@ -6,7 +6,7 @@
     \n/system script run scr_KeepAliveLTE" on-up="foreach i in=[/system script job find script=scr_KeepAliveLTE ] do={/system script job remove \$i} \r\
     \n/system script environment remove [find]" use-compression=yes use-encryption=yes use-mpls=no
 
-
+/system script
 add dont-require-permissions=no name=scr_KeepAliveLTE owner=Fritz policy=\
     reboot,read,write,policy,test,sensitive source=":global int \$int\r\
     \n:global UP [system resource get uptime]\r\
