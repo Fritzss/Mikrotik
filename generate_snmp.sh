@@ -97,5 +97,115 @@ $(MIBDIR)/.net-snmp:
         @curl $(CURL_OPTS) -o $(MIBDIR)/UCD-SNMP-MIB $(NET_SNMP_URL)/UCD-SNMP-MIB.txt
         @touch $(MIBDIR)/.net-snmp
 EOF
+
+cat <<EOF> ./generator.yml
+---
+auths:
+  public_v1:
+    version: 1
+  public_v2:
+    version: 2
+
+modules:
+  # Default IF-MIB interfaces table with ifIndex.
+  if_mib:
+    walk: [sysUpTime, interfaces, ifXTable]
+    lookups:
+      - source_indexes: [ifIndex]
+        lookup: ifAlias
+      - source_indexes: [ifIndex]
+        # Uis OID to avoid conflict with PaloAlto PAN-COMMON-MIB.
+        lookup: 1.3.6.1.2.1.2.2.1.2 # ifDescr
+      - source_indexes: [ifIndex]
+        # Use OID to avoid conflict with Netscaler NS-ROOT-MIB.
+        lookup: 1.3.6.1.2.1.31.1.1.1.1 # ifName
+    overrides:
+      ifAlias:
+        ignore: true # Lookup metric
+      ifDescr:
+        ignore: true # Lookup metric
+      ifName:
+        ignore: true # Lookup metric
+      ifType:
+        type: EnumAsInfo
+  # Default IP-MIB with ipv4InterfaceTable for example.
+  ip_mib:
+    walk: [ipv4InterfaceTable]
+
+# Mikrotik Router
+#
+# http://download2.mikrotik.com/Mikrotik.mib
+  mikrotik:
+    walk:
+      - laIndex
+      - sysDescr
+      - mikrotik
+    lookups:
+      - source_indexes: [ifIndex]
+        lookup: ifName
+      - source_indexes: [mtxrInterfaceStatsIndex]
+        lookup: ifName
+      - source_indexes: [laIndex]
+        lookup: laNames
+        drop_source_indexes: true
+      - source_indexes: [mtxrGaugeIndex]
+        lookup: mtxrGaugeName
+        drop_source_indexes: true
+      - source_indexes: [mtxrNeighborIndex]
+        lookup: mtxrNeighborMacAddress
+        drop_source_indexes: true
+      - source_indexes: [mtxrNeighborIndex]
+        lookup: mtxrNeighborInterfaceID
+      - source_indexes: [mtxrNeighborInterfaceID]
+        lookup: ifName
+        drop_source_indexes: true
+      - source_indexes: [mtxrOpticalIndex]
+        lookup: mtxrOpticalName
+      - source_indexes: [mtxrPOEInterfaceIndex]
+        lookup: mtxrPOEName
+      - source_indexes: [mtxrPartitionIndex]
+        lookup: mtxrPartitionName
+    overrides:
+      ifName:
+        ignore: true # Lookup metric
+      ifType:
+        type: EnumAsInfo
+      # Remap enums where 1==true, 2==false to become 0==false, 1==true.
+      hrDiskStorageRemoveble:
+        scale: -1.0
+        offset: 2.0
+
+
+#
+# HOST-RESOURCES-MIB
+#
+# http://www.net-snmp.org/docs/mibs/host.html
+  hrSystem:
+    walk:
+      - hrSystem
+  hrStorage:
+    walk:
+      - hrStorage
+    lookups:
+      - source_indexes: [hrStorageIndex]
+        lookup: hrStorageDescr
+        drop_source_indexes: true
+  hrDevice:
+    walk:
+      - hrDevice
+    overrides:
+      hrPrinterStatus:
+        type: EnumAsStateSet
+  hrSWRun:
+    walk:
+      - hrSWRun
+  hrSWRunPerf:
+    walk:
+      - hrSWRunPerf
+  hrSWInstalled:
+    walk:
+      - hrSWInstalled
+EOF
+
 make generate mibs
 ./generator generate -m mibs/ -o ./snmp.yml
