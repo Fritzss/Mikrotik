@@ -1,5 +1,5 @@
 . |=parse_regex!(.message, r'(?P<Topics>\S+)')
-#\s(?P<prefix>\S+)\s(?P<chain>\S+)')
+
 if match(.Topics, r'.*firewall.*') {
 . |=parse_regex!(.message, r'\s(?P<prefix>\S+)\s(?P<chain>\S+)')
 if match(.chain, r'.*srcnat.*') {
