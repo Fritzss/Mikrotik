@@ -1,4 +1,4 @@
-CREATE DATABASE logs 
+CREATE DATABASE logs; 
 CREATE TABLE logs.ros_logs
 (
     `host` String,
@@ -7,6 +7,5 @@ CREATE TABLE logs.ros_logs
     `timestamp` DateTime
 )
 ENGINE = MergeTree
-PARTITION BY timestamp
 ORDER BY timestamp
 SETTINGS index_granularity = 8192 
