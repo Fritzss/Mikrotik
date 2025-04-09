@@ -7,7 +7,7 @@
 :global jmprule [/ip/firewall/mangle/ find action=jump chain=prerouting connection-state="new" dst-port=$dstport jump-target="fail2ban_$dstport"]
 :global fail2banchain [/ip/firewall/mangle/ find chain="fail2ban_$dstport"]
 
-if ([:len $fail2banchain = $quantity) do={:put "chain fail2ban_$dstport is exist, count rule $quantity"} else={
+if ([:len $fail2banchain] = $quantity) do={:put "chain fail2ban_$dstport is exist, count rule $quantity"} else={
 
 if $est do={/ip firewall mangle set comment="EST,REL" $est} else={/ip firewall mangle add action=accept chain=prerouting connection-state=established,related comment="EST,REL"}
 
@@ -19,8 +19,8 @@ if $jmprule do={/ip firewall mangle set comment="jmprule for fail2ban $dstport" 
  
 for i from=$quantity to=2 step=-1 do={ :local j ($i-1) ; $fail2ban i=$i j=$j}
 
-/ip firewall mangle  add action=add-src-to-address-list address-list="attack_attempt_$dstport_1" address-list-timeout=1m chain="fail2ban_$dstport" comment="IP address that attempted to create an $dstport connections" connection-state=new \
-    log-prefix=1 protocol=$proto
+/ip firewall mangle  add action=add-src-to-address-list address-list="attack_attempt_$dstport_1" address-list-timeout=1m chain="fail2ban_$dstport" comment="IP address that attempted to create an $dstport connections" connection-state=new
+   
 /ip firewall raw add action=drop dst-port=$dstport protocol=$proto src-address-list="attacker_blacklist_$dstport" chain=prerouting comment="drop attacker_blacklist_$dstport"
 }
 
