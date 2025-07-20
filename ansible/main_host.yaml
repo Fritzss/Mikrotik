@@ -1,0 +1,19 @@
+<group_name1>:
+  name: <name>
+  host: <ip_address>
+<group_name2>:
+  name: <name>
+  host: <ip_address>
+vars:
+  user: <username>
+  password: <password>
+  roles:
+    - role: <role1>
+      tag: <tag1>
+    - role: <role2>
+      tag: <tag2>
+  architectures:
+    - arch: "<architecture>"
+      arch_group: "<architecture group>"
+  exclude_interfaces:
+    - <interface>
