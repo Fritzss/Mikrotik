@@ -59,7 +59,8 @@ python create_mikrotik_inventory.py
 
 bash
 ansible-playbook -i /var/opt/ansible/inventory/dyn_inven.yaml playbook.yml
-Советы
+#### Советы
+
 Для критически важных систем укажите абсолютные пути для output_inventory
 
 Увеличьте max_workers для больших сетей (но не более 20-30)
