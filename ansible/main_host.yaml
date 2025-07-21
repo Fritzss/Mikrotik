@@ -8,6 +8,8 @@ vars:
   user: <username>
   password: <password>
   roles:
+    - role_def: <default_role>
+      tag: <tag>
     - role: <role1>
       tag: <tag1>
     - role: <role2>
