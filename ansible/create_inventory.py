@@ -88,12 +88,8 @@ def exec(ser, com, log, logfail):
             hostname = iphost.replace('\n', '')
             if check(hostname):
                result = execcom(ip=hostname, username=user, port=port, password=password, command=com)
-                 # send(result, hostname)  #if need to email
-                 # sendTG(f'{hostname} {result}') #if need to TG
                writeLogSuccess(result, log) #if need to log file
             else:
-                  # send(body, hostname) #if need to email
-                  # sendTG(f'Fail ping {hostname}') #if need to TG
                writeLogFail(result, logfail) #if write to log file
 
 
