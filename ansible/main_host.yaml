@@ -5,8 +5,15 @@
   name: <name>
   host: <ip_address>
 vars:
-  user: <username>
-  password: <password>
+  user: <username> # SSH username for all devices
+  password: <password> # SSH password for all devices
+  
+  # Configuration options
+  output_inventory: '<path_to_inventory_file>'
+  board_arch_cache_file: '<path_to_cache_file>'
+  ssh_port: 22
+  max_workers: 10
+  encoding: 'utf-8'
   roles:
     - role_def: <default_role>
       tag: <tag>
@@ -18,4 +25,4 @@ vars:
     - arch: "<architecture>"
       arch_group: "<architecture group>"
   exclude_interfaces:
-    - <interface>
+    - <interface> # устройства с этим интерфейсом будут исключенны из инвентори
