@@ -3,10 +3,15 @@
 from paramiko import SSHClient, AutoAddPolicy
 import re
 import yaml
-from subprocess import run, PIPE
 import os
 import sys
 import logging
+import concurrent.futures
+import threading
+import json
+from datetime import datetime
+from functools import partial  # Добавлен импорт partial
+from subprocess import run, PIPE  # Добавлен импорт run и PIPE
 
 # Конфигурация логгера
 logging.basicConfig(
@@ -23,16 +28,23 @@ logger = logging.getLogger(__name__)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 os.chdir(SCRIPT_DIR)
 
+
 INVENTORY_FILE = './main_hosts.yaml'
-OUTPUT_INVENTORY = '/var/opt/ansible/inventory/dyn_inven.yaml'
+OUTPUT_INVENTORY = '/var/opt/ansible/inventory/as_dyn_inven.yaml'
 BACKUP_INVENTORY = './backup_dyn_inven.yaml'
+BOARD_ARCH_CACHE_FILE = './mikrotik_board_arch_cache.json'
 SSH_PORT = 22
 ENCODING = 'utf-8'
+MAX_WORKERS = 10
+LOCK = threading.Lock()
 
 # SSH-команды
 NEIGHBOR_CMD = ':put [ /ip neighbor print detail without-paging where platform="MikroTik" address~".+"]'
 RESOURCE_CMD = ':put [/system resource print without-paging]'
 
+# Глобальный кеш архитектур плат
+BOARD_ARCH_CACHE = {}
+CACHE_LOADED = False
 
 class DeviceConnection:
     """Класс для управления SSH-соединением и выполнения команд"""
@@ -78,26 +90,8 @@ class DeviceConnection:
             return ""
 
 
-def check_host(ip_address):
-    """Проверка доступности хоста через ping"""
-    result = run(['ping', '-c', '3', '-n', ip_address],
-                 stdout=PIPE,
-                 stderr=PIPE,
-                 encoding=ENCODING)
-    return result.returncode == 0
-
-
-def get_device_info(host, username, password):
-    """Получение информации о устройстве"""
-    with DeviceConnection(host, username, password) as conn:
-        if conn is None:
-            return {'arch': 'unknown', 'board': 'unknown', 'version': 'unknown'}
-
-        resource_data = conn.execute_command(RESOURCE_CMD)
-
-    if not resource_data:
-        return {'arch': 'unknown', 'board': 'unknown', 'version': 'unknown'}
-
+def parse_device_info(resource_data):
+    """Парсинг информации об устройстве из данных ресурсов"""
     try:
         arch_match = re.search(r'architecture-name:\s*(.+?)\s', resource_data)
         board_match = re.search(r'board-name:\s*(.+?)\s', resource_data)
@@ -107,11 +101,135 @@ def get_device_info(host, username, password):
         board = board_match.group(1).strip() if board_match else 'unknown'
         version = version_match.group(1).strip() if version_match else 'unknown'
 
-        logger.info(f"Device info: {host} | Arch: {arch} | Board: {board} | Version: {version}")
         return {'arch': arch, 'board': board, 'version': version}
     except Exception as e:
-        logger.error(f"Error parsing resource data for {host}: {str(e)}")
+        logger.error(f"Error parsing resource data: {str(e)}")
         return {'arch': 'unknown', 'board': 'unknown', 'version': 'unknown'}
+
+
+def get_device_info(host, username, password):
+    """Получение информации об устройстве"""
+    with DeviceConnection(host, username, password) as conn:
+        if conn is None:
+            return {'arch': 'unknown', 'board': 'unknown', 'version': 'unknown'}
+
+        resource_data = conn.execute_command(RESOURCE_CMD)
+
+    if not resource_data:
+        return {'arch': 'unknown', 'board': 'unknown', 'version': 'unknown'}
+
+    device_info = parse_device_info(resource_data)
+    logger.info(f"Device info: {host} | Arch: {device_info['arch']} | Board: {device_info['board']} | Version: {device_info['version']}")
+
+    # Добавляем информацию о платформе в кеш
+    if device_info['board'] != 'unknown':
+        update_board_arch_cache(device_info['board'], device_info['arch'])
+
+    return device_info
+
+
+def load_board_arch_cache():
+    """Загрузка кеша архитектур плат из файла"""
+    global BOARD_ARCH_CACHE, CACHE_LOADED
+    if CACHE_LOADED:
+        return
+
+    try:
+        if os.path.exists(BOARD_ARCH_CACHE_FILE):
+            with open(BOARD_ARCH_CACHE_FILE, 'r') as f:
+                BOARD_ARCH_CACHE = json.load(f)
+                logger.info(f"Loaded board architecture cache with {len(BOARD_ARCH_CACHE)} entries")
+        else:
+            BOARD_ARCH_CACHE = {}
+            logger.info("Board architecture cache file not found, starting with empty cache")
+    except Exception as e:
+        logger.error(f"Failed to load board architecture cache: {str(e)}")
+        BOARD_ARCH_CACHE = {}
+
+    CACHE_LOADED = True
+
+
+def save_board_arch_cache():
+    """Сохранение кеша архитектур плат в файл"""
+    try:
+        with open(BOARD_ARCH_CACHE_FILE, 'w') as f:
+            json.dump(BOARD_ARCH_CACHE, f, indent=2)
+        logger.info(f"Saved board architecture cache with {len(BOARD_ARCH_CACHE)} entries")
+    except Exception as e:
+        logger.error(f"Failed to save board architecture cache: {str(e)}")
+
+
+def update_board_arch_cache(board, arch):
+    """Обновление кеша архитектур плат"""
+    global BOARD_ARCH_CACHE
+
+    # Проверяем, нужно ли обновлять кеш
+    if board in BOARD_ARCH_CACHE:
+        if BOARD_ARCH_CACHE[board] == arch:
+            return  # Значение не изменилось
+        if BOARD_ARCH_CACHE[board] != 'unknown' and arch == 'unknown':
+            return  # Не заменяем известное значение на unknown
+
+    # Обновляем кеш
+    BOARD_ARCH_CACHE[board] = arch
+    logger.info(f"Updated cache: {board} -> {arch}")
+
+    # Сохраняем кеш на диск
+    save_board_arch_cache()
+
+
+def get_arch_for_board(board, ip, username, password):
+    """Получение архитектуры для платы с использованием кеша"""
+    global BOARD_ARCH_CACHE
+
+    # Загружаем кеш при первом вызове
+    if not CACHE_LOADED:
+        load_board_arch_cache()
+
+    # Если плата есть в кеше, возвращаем значение
+    if board in BOARD_ARCH_CACHE:
+        return BOARD_ARCH_CACHE[board]
+
+    logger.info(f"Board {board} not in cache, querying device {ip}...")
+
+    # Получаем информацию об архитектуре через SSH
+    device_info = get_device_info(ip, username, password)
+    arch = device_info['arch']
+
+    # Обновляем кеш
+    update_board_arch_cache(board, arch)
+
+    return arch
+
+
+def parse_neighbor_entry(entry):
+    """Парсинг записи о соседнем устройстве"""
+    try:
+        identity_match = re.search(r'identity="(.+?)"', entry)
+        ip_match = re.search(r'address=(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', entry)
+        version_match = re.search(r'version="(\d+(?:\.\d+)+)', entry)
+        interface_match = re.search(r'interface=(.+?)\s', entry)
+        board_match = re.search(r'board="(.+?)"', entry)
+
+        if not all([identity_match, ip_match, version_match, interface_match, board_match]):
+            return None
+
+        identity = identity_match.group(1)
+        ip = ip_match.group(1)
+        version = version_match.group(1)
+        interface = interface_match.group(1)
+        board = board_match.group(1)
+
+        return {
+            'identity': identity,
+            'ip': ip,
+            'version': version,
+            'interface': interface,
+            'board': board
+        }
+    except Exception as e:
+        logger.error(f"Error parsing neighbor entry: {entry} | Error: {str(e)}")
+        return None
 
 
 def get_neighbors(host, username, password):
@@ -131,29 +249,9 @@ def get_neighbors(host, username, password):
         if not entry.strip():
             continue
 
-        try:
-            identity_match = re.search(r'identity="(.+?)"', entry)
-            ip_match = re.search(r'address=(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', entry)
-            version_match = re.search(r'version="(\d+(?:\.\d+)+)', entry)
-            interface_match = re.search(r'interface=(.+?)\s', entry)
-
-            if not all([identity_match, ip_match, version_match, interface_match]):
-                logger.warning(f"Incomplete neighbor entry: {entry}")
-                continue
-
-            identity = identity_match.group(1)
-            ip = ip_match.group(1)
-            version = version_match.group(1)
-            interface = interface_match.group(1)
-
-            devices.append({
-                'identity': identity,
-                'ip': ip,
-                'version': version,
-                'interface': interface,
-            })
-        except Exception as e:
-            logger.error(f"Error parsing neighbor entry: {entry} | Error: {str(e)}")
+        device = parse_neighbor_entry(entry)
+        if device:
+            devices.append(device)
 
     return devices
 
@@ -176,22 +274,96 @@ def generate_inventory_structure():
 
 def determine_role(identity, roles):
     """Определение роли устройства на основе identity и списка ролей"""
-    if not identity:
+    if not identity or not roles:
         return 'unknown'
 
     # Берем последний символ identity для определения роли
     role_char = identity[-1]
 
     for role_def in roles:
-        if role_def['tag'] == role_char:
-            return role_def['role']
-        else:
-            return role_def['role_def']
+        if role_def.get('tag') == role_char:
+            return role_def.get('role', 'unknown')
 
     return 'unknown'
 
 
+def process_main_device(group_name, group_data, global_vars, inventory):
+    """Обработка главного устройства и его соседей"""
+    host = group_data.get("host")
+    name = group_data.get("name")
+
+    if not host or not name:
+        logger.warning(f"Skipping group {group_name} due to missing host or name")
+        return inventory
+
+    username = global_vars.get("user", "")
+    password = global_vars.get("password", "")
+
+    # Информация о главном устройстве
+    device_info = get_device_info(host, username, password)
+
+    # Добавление главного устройства в инвентарь
+    group_key = f"group_{group_name}"
+
+    with LOCK:
+        inventory['all']['children'].setdefault(group_key, {'hosts': {}})
+        inventory['all']['children'][group_key]['hosts'][name] = {
+            'ansible_host': host,
+            'version': device_info['version'],
+            'identity': name,
+            'role': 'root',
+            'architecture': device_info['arch'],
+            'board': device_info['board']
+        }
+
+    logger.info(f"Added main device: {name} ({host}) to group {group_key}")
+
+    # Получение и обработка соседей
+    neighbors = get_neighbors(host, username, password)
+    if not neighbors:
+        return inventory
+
+    # Обработка соседей
+    for neighbor in neighbors:
+        # Получаем архитектуру для платы с использованием кеша
+        arch = get_arch_for_board(
+            neighbor['board'],
+            neighbor['ip'],
+            username,
+            password
+        )
+
+        # Определение роли
+        role = determine_role(neighbor['identity'], global_vars.get("roles", []))
+
+        # Определение группы по архитектуре
+        arch_group = 'default'
+        for arch_def in global_vars.get("architectures", []):
+            if arch_def['arch'] in arch:
+                arch_group = arch_def['arch_group']
+                break
+
+        # Добавление в инвентарь
+        with LOCK:
+            inventory['all']['children'].setdefault(arch_group, {'hosts': {}})
+            inventory['all']['children'][arch_group]['hosts'][neighbor['identity']] = {
+                'ansible_host': neighbor['ip'],
+                'version': neighbor['version'],
+                'identity': neighbor['identity'],
+                'role': role,
+                'architecture': arch,
+                'board': neighbor['board']
+            }
+
+        logger.info(f"Added neighbor: {neighbor['ip']} | Role: {role} | Board: {neighbor['board']} | Arch: {arch}")
+
+    return inventory
+
+
 def main():
+    # Загрузка кеша архитектур плат
+    load_board_arch_cache()
+
     # Загрузка основного инвентаря
     try:
         with open(INVENTORY_FILE) as f:
@@ -203,7 +375,8 @@ def main():
     global_vars = main_inventory.get("vars", {})
     inventory = generate_inventory_structure()
 
-    # Обработка устройств из main_host.yaml
+    # Подготовка списка главных устройств для обработки
+    main_devices = []
     for group_name, group_data in main_inventory.items():
         if group_name == "vars":
             continue
@@ -219,62 +392,34 @@ def main():
             logger.warning(f"Skipping group {group_name} due to missing host or name")
             continue
 
-        username = global_vars.get("user", "")
-        password = global_vars.get("password", "")
+        main_devices.append((group_name, group_data))
 
-        # Информация о главном устройстве
-        device_info = get_device_info(host, username, password)
+    # Параллельная обработка главных устройств
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(main_devices))) as executor:
+        # Создаем частичную функцию с фиксированными параметрами
+        process_fn = partial(
+            process_main_device,
+            global_vars=global_vars,
+            inventory=inventory
+        )
 
-        # Добавление главного устройства
-        group_key = f"group_{group_name}"
-        inventory['all']['children'].setdefault(group_key, {'hosts': {}})
-        inventory['all']['children'][group_key]['hosts'][name] = {
-            'ansible_host': host,
-            'version': device_info['version'],
-            'identity': name,
-            'role': 'root',
-            'architecture': device_info['arch'],
-            'board': device_info['board']
-        }
-        logger.info(f"Added main device: {name} ({host}) to group {group_key}")
+        # Запускаем обработку главных устройств
+        futures = {executor.submit(process_fn, group_name, group_data): (group_name, group_data)
+                   for group_name, group_data in main_devices}
 
-        # Обработка соседних устройств
-        neighbors = get_neighbors(host, username, password)
-        exclude_interfaces = global_vars.get("exclude_interfaces", [])
-        roles = global_vars.get("roles", [])
-        architectures = global_vars.get("architectures", [])
+        # Обработка результатов
+        for future in concurrent.futures.as_completed(futures):
+            group_name, group_data = futures[future]
+            try:
+                # Обновляем инвентарь из каждого потока
+                inventory = future.result()
+            except Exception as e:
+                logger.error(f"Error processing main device {group_data.get('host')}: {str(e)}")
 
-        for neighbor in neighbors:
-            if neighbor['interface'] in exclude_interfaces:
-                logger.info(f"Skipping neighbor {neighbor['ip']} on excluded interface {neighbor['interface']}")
-                continue
+    # Сохранение кеша архитектур плат
+    save_board_arch_cache()
 
-            # Определение роли по последнему символу identity
-            role = determine_role(neighbor['identity'], roles)
-
-            # Получаем информацию о железе соседнего устройства
-            neighbor_info = get_device_info(neighbor['ip'], username, password)
-
-            # Определение группы по архитектуре
-            arch_group = 'default'
-            for arch in architectures:
-                if arch['arch'] in neighbor_info['arch']:
-                    arch_group = arch['arch_group']
-                    break
-
-            # Добавление в инвентарь
-            inventory['all']['children'].setdefault(arch_group, {'hosts': {}})
-            inventory['all']['children'][arch_group]['hosts'][neighbor['identity']] = {
-                'ansible_host': neighbor['ip'],
-                'version': neighbor['version'],
-                'identity': neighbor['identity'],
-                'role': role,
-                'architecture': neighbor_info['arch'],
-                'board': neighbor_info['board']
-            }
-            logger.info(f"Added neighbor: {neighbor['ip']} | Role: {role} | Interface: {neighbor['interface']}")
-
-    # Сохранение результатов
+    # Сохранение результатов инвентаризации
     for file_path in [OUTPUT_INVENTORY, BACKUP_INVENTORY]:
         try:
             with open(file_path, 'w') as f:
