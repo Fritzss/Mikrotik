@@ -9,9 +9,8 @@ import logging
 import concurrent.futures
 import threading
 import json
-from datetime import datetime
-from functools import partial  # Добавлен импорт partial
-from subprocess import run, PIPE  # Добавлен импорт run и PIPE
+from functools import partial
+from subprocess import run, PIPE
 
 # Конфигурация логгера
 logging.basicConfig(
@@ -28,31 +27,31 @@ logger = logging.getLogger(__name__)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
 os.chdir(SCRIPT_DIR)
 
-
 INVENTORY_FILE = './main_hosts.yaml'
-OUTPUT_INVENTORY = '/var/opt/ansible/inventory/as_dyn_inven.yaml'
-BACKUP_INVENTORY = './backup_dyn_inven.yaml'
-BOARD_ARCH_CACHE_FILE = './mikrotik_board_arch_cache.json'
-SSH_PORT = 22
-ENCODING = 'utf-8'
-MAX_WORKERS = 10
+
+# Глобальные переменные, которые будут установлены из YAML
+OUTPUT_INVENTORY = None
+BACKUP_INVENTORY = None
+BOARD_ARCH_CACHE_FILE = None
+SSH_PORT = None
+MAX_WORKERS = None
+ENCODING = None
+
+# Глобальный кеш архитектур плат
+BOARD_ARCH_CACHE = {}
+CACHE_LOADED = False
 LOCK = threading.Lock()
 
 # SSH-команды
 NEIGHBOR_CMD = ':put [ /ip neighbor print detail without-paging where platform="MikroTik" address~".+"]'
 RESOURCE_CMD = ':put [/system resource print without-paging]'
 
-# Глобальный кеш архитектур плат
-BOARD_ARCH_CACHE = {}
-CACHE_LOADED = False
-
 class DeviceConnection:
     """Класс для управления SSH-соединением и выполнения команд"""
-    def __init__(self, host, username, password, port=SSH_PORT):
+    def __init__(self, host, username, password):
         self.host = host
         self.username = username
         self.password = password
-        self.port = port
         self.client = None
 
     def __enter__(self):
@@ -62,7 +61,7 @@ class DeviceConnection:
         try:
             self.client.connect(
                 self.host,
-                port=self.port,
+                port=SSH_PORT,
                 username=self.username,
                 password=self.password,
                 timeout=3,
@@ -189,7 +188,6 @@ def get_arch_for_board(board, ip, username, password):
     # Если плата есть в кеше, возвращаем значение
     if board in BOARD_ARCH_CACHE:
         return BOARD_ARCH_CACHE[board]
-
     logger.info(f"Board {board} not in cache, querying device {ip}...")
 
     # Получаем информацию об архитектуре через SSH
@@ -283,6 +281,8 @@ def determine_role(identity, roles):
     for role_def in roles:
         if role_def.get('tag') == role_char:
             return role_def.get('role', 'unknown')
+        else:
+            return role_def.get('role_def', 'unknown')
 
     return 'unknown'
 
@@ -303,7 +303,7 @@ def process_main_device(group_name, group_data, global_vars, inventory):
     device_info = get_device_info(host, username, password)
 
     # Добавление главного устройства в инвентарь
-    group_key = f"group_{group_name}"
+    group_key = group_name
 
     with LOCK:
         inventory['all']['children'].setdefault(group_key, {'hosts': {}})
@@ -337,7 +337,7 @@ def process_main_device(group_name, group_data, global_vars, inventory):
         role = determine_role(neighbor['identity'], global_vars.get("roles", []))
 
         # Определение группы по архитектуре
-        arch_group = 'default'
+        arch_group = group_key
         for arch_def in global_vars.get("architectures", []):
             if arch_def['arch'] in arch:
                 arch_group = arch_def['arch_group']
@@ -361,8 +361,7 @@ def process_main_device(group_name, group_data, global_vars, inventory):
 
 
 def main():
-    # Загрузка кеша архитектур плат
-    load_board_arch_cache()
+    global OUTPUT_INVENTORY, BACKUP_INVENTORY, BOARD_ARCH_CACHE_FILE, SSH_PORT, MAX_WORKERS, ENCODING
 
     # Загрузка основного инвентаря
     try:
@@ -373,6 +372,18 @@ def main():
         return
 
     global_vars = main_inventory.get("vars", {})
+
+    # Установка конфигурационных переменных
+    OUTPUT_INVENTORY = global_vars.get('output_inventory', '/var/opt/ansible/inventory/dyn_inven.yaml')
+    BACKUP_INVENTORY = global_vars.get('backup_inventory', './backup_dyn_inven.yaml')
+    BOARD_ARCH_CACHE_FILE = global_vars.get('board_arch_cache_file', './mikrotik_board_arch_cache.json')
+    SSH_PORT = global_vars.get('ssh_port', 22)
+    MAX_WORKERS = global_vars.get('max_workers', 10)
+    ENCODING = global_vars.get('encoding', 'utf-8')
+
+    # Загрузка кеша архитектур плат
+    load_board_arch_cache()
+
     inventory = generate_inventory_structure()
 
     # Подготовка списка главных устройств для обработки
@@ -420,13 +431,15 @@ def main():
     save_board_arch_cache()
 
     # Сохранение результатов инвентаризации
-    for file_path in [OUTPUT_INVENTORY, BACKUP_INVENTORY]:
-        try:
-            with open(file_path, 'w') as f:
-                yaml.dump(inventory, f)
-            logger.info(f"Inventory saved to {file_path}")
-        except Exception as e:
-            logger.error(f"Failed to save inventory to {file_path}: {str(e)}")
+    try:
+       # Создаем директорию, если она не существует
+       os.makedirs(os.path.dirname(OUTPUT_INVENTORY), exist_ok=True)
+
+       with open(file_path, 'w') as f:
+            yaml.dump(inventory, f)
+       logger.info(f"Inventory saved to {OUTPUT_INVENTORY}")
+    except Exception as e:
+           logger.error(f"Failed to save inventory to {OUTPUT_INVENTORY}: {str(e)}")
 
 
 if __name__ == "__main__":
