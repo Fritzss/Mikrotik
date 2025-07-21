@@ -1,200 +1,288 @@
 #!/bin/python3
 
 from paramiko import SSHClient, AutoAddPolicy
-import re, yaml
+import re
+import yaml
 from subprocess import run, PIPE
-
-
 import os
 import sys
+import logging
+
+# Конфигурация логгера
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("inventory.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Константы
+SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.argv[0]))
+os.chdir(SCRIPT_DIR)
+
+INVENTORY_FILE = './main_hosts.yaml'
+OUTPUT_INVENTORY = '/var/opt/ansible/inventory/dyn_inven.yaml'
+BACKUP_INVENTORY = './backup_dyn_inven.yaml'
+SSH_PORT = 22
+ENCODING = 'utf-8'
+
+# SSH-команды
+NEIGHBOR_CMD = ':put [ /ip neighbor print detail without-paging where platform="MikroTik" address~".+"]'
+RESOURCE_CMD = ':put [/system resource print without-paging]'
 
 
+class DeviceConnection:
+    """Класс для управления SSH-соединением и выполнения команд"""
+    def __init__(self, host, username, password, port=SSH_PORT):
+        self.host = host
+        self.username = username
+        self.password = password
+        self.port = port
+        self.client = None
 
-def cd_script_path():
-    # Get the directory where the script is located
-    script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
-    # Change the current working directory
-    os.chdir(script_dir)
+    def __enter__(self):
+        self.client = SSHClient()
+        self.client.load_system_host_keys()
+        self.client.set_missing_host_key_policy(AutoAddPolicy())
+        try:
+            self.client.connect(
+                self.host,
+                port=self.port,
+                username=self.username,
+                password=self.password,
+                timeout=3,
+                banner_timeout=1,
+                auth_timeout=20
+            )
+            return self
+        except Exception as e:
+            logger.error(f"SSH connection failed to {self.host}: {str(e)}")
+            return None
 
-cd_script_path()
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.client:
+            self.client.close()
 
-encoding = 'utf-8'
-inventory = './main_host.yaml'
-
-port = 22
-result = ''
-com = ':put [ /ip neighbor print detail without-paging where platform="MikroTik" address~".+"]'
-log = './ros.log'
-logfail = './ros.err.log'
-
-
-def writeLogSuccess(message,log):
-                 f = open(log, 'a')
-                 f.write(f'{message}\n')
-                 f.close
-
-def writeLogFail(message,log):
-             f = open(log, 'a')
-             f.write(f'{message}\n')
-             f.close
-
-
-with open(inventory) as h:
-   main = yaml.safe_load(h)
-
-vars = main["vars"]
-
-
-def check(ip_address):
-    """
-    Ping IP address and return tuple:
-    On success:
-        * True
-        * command output (stdout)
-    On failure:
-        * False
-        * error output (stderr)
-    """
-    reply = run(['ping', '-c', '3', '-n', ip_address],
-                           stdout=PIPE,
-                           stderr=PIPE,
-                           encoding='utf-8')
-    if reply.returncode == 0:
-        return True #, reply.stdout
-    else:
-        return False #, reply.stderr
+    def execute_command(self, command):
+        """Выполнение команды на устройстве"""
+        try:
+            if not self.client:
+                return ""
+            _, stdout, _ = self.client.exec_command(command)
+            return stdout.read().decode(ENCODING)
+        except Exception as e:
+            logger.error(f"SSH command error on {self.host}: {str(e)}")
+            return ""
 
 
+def check_host(ip_address):
+    """Проверка доступности хоста через ping"""
+    result = run(['ping', '-c', '3', '-n', ip_address],
+                 stdout=PIPE,
+                 stderr=PIPE,
+                 encoding=ENCODING)
+    return result.returncode == 0
 
 
-def execcom(ip, username, port, password, command):
+def get_device_info(host, username, password):
+    """Получение информации о устройстве"""
+    with DeviceConnection(host, username, password) as conn:
+        if conn is None:
+            return {'arch': 'unknown', 'board': 'unknown', 'version': 'unknown'}
+
+        resource_data = conn.execute_command(RESOURCE_CMD)
+
+    if not resource_data:
+        return {'arch': 'unknown', 'board': 'unknown', 'version': 'unknown'}
+
     try:
-      client = SSHClient()
-      client.load_system_host_keys()
-      client.set_missing_host_key_policy(AutoAddPolicy())
-      client.connect(ip, port=port, username=username, password=password,timeout=3, banner_timeout=1, auth_timeout=20)
-      stdin, stdout, stderr = client.exec_command(command)
-      res = stdout.read()
-      return res
+        arch_match = re.search(r'architecture-name:\s*(.+?)\s', resource_data)
+        board_match = re.search(r'board-name:\s*(.+?)\s', resource_data)
+        version_match = re.search(r'version:\s*(\d+(?:\.\d+)+)', resource_data)
+
+        arch = arch_match.group(1).strip() if arch_match else 'unknown'
+        board = board_match.group(1).strip() if board_match else 'unknown'
+        version = version_match.group(1).strip() if version_match else 'unknown'
+
+        logger.info(f"Device info: {host} | Arch: {arch} | Board: {board} | Version: {version}")
+        return {'arch': arch, 'board': board, 'version': version}
     except Exception as e:
-      return e
-    finally:
-      client.close()
+        logger.error(f"Error parsing resource data for {host}: {str(e)}")
+        return {'arch': 'unknown', 'board': 'unknown', 'version': 'unknown'}
 
 
+def get_neighbors(host, username, password):
+    """Получение списка соседних MikroTik устройств"""
+    with DeviceConnection(host, username, password) as conn:
+        if conn is None:
+            return []
+        neighbor_data = conn.execute_command(NEIGHBOR_CMD)
 
-def exec(ser, com, log, logfail):
-        for iphost in ser:
-            hostname = iphost.replace('\n', '')
-            if check(hostname):
-               result = execcom(ip=hostname, username=user, port=port, password=password, command=com)
-               writeLogSuccess(result, log) #if need to log file
-            else:
-               writeLogFail(result, logfail) #if write to log file
+    if not neighbor_data:
+        return []
 
+    devices = []
+    entries = re.split(r'\s\d+\s', neighbor_data)
 
-def get_arh(host,user,password):
-   com = ':put [/system resource print without-paging]'
-   arh = execcom(ip=host, username=user, port=port, password=password, command=com)
-   try:
-     arh = arh.decode(encoding)
-     board=''.join(map(str, re.findall('.*board-name:\s(.+)[\s]', arh)))
-     version = ''.join(map(str, re.findall('.*version:\s(\d+|\d+\.\d+|\d+\.\d+\.\d+)[\s]', arh)))
-     arh = ''.join(map(str, re.findall('.*architecture-name:\s(.+)?', arh)))
-     arh = arh.strip()
-     board = board.strip()
-     version = version.strip()
-     print(f'host {host} arh {arh} board {board} version {version}')
-     return arh, board, version
-   except:
-     board='unknow'
-     version = 'unknow'
-     arh = 'unknow'
-     print(f'host {host} arh {arh} board {board} version {version}')
-     return arh, board, version
-
-
-
-def get_version(host,user,password):
-   com = ':put [/system resource get version ]'
-   ver = execcom(ip=host, username=user, port=port, password=password, command=com)
-   print(f'version {ver}')
-   ver = ver.decode(encoding)
-   ver = ver.split()
-   ch = ver[1].strip('(').strip(')')
-   ver = ver[0]
-   return ver, ch
-
-
-
-def make_inventory(group, name, host, user, password):
-  inv={}
-  resuorce= get_arh(host,user,password)
-  inv.update({'clouds': {'hosts': {} } })
-  inv.update({ group: {'hosts': {} } })
-  inv[group]['hosts'].update({name: {}})
-  inv[group]['hosts'][name].update({'ansible_host': host })
-  inv[group]['hosts'][name].update({'version': resuorce[2] })
-  inv[group]['hosts'][name].update({'identity': name  })
-  inv[group]['hosts'][name].update({'role': 'root' })
-  inv[group]['hosts'][name].update({'architecture': resuorce[0] })
-  inv[group]['hosts'][name].update({'board': resuorce[1] })
-
-  com = ':put [ /ip neighbor print detail without-paging where platform="MikroTik" address~".+" ]'
-  result = execcom(ip=host, username=user, port=port, password=password, command=com)
-  result = result.decode(encoding)
-  group_ = group
-  for i in re.split('\s\d{1,3}\s',result):
-    if len(i) > 0:
-      identity=''.join(map(str, re.findall('identity=\"(.+?)\"', i)))
-      ansible_host=''.join(map(str, re.findall('address=(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', i)))
-      version=''.join(map(str, re.findall('version=\"(\d{1,2}|\d+\.\d{1,2}|\d+\.\d+\.\d{1,2})[\s]', i)))
-      role=''.join(map(str, re.findall('identity=\"(.+?)\"', i)))
-      resuorce=get_arh(ansible_host, user, password)
-      board=''.join(map(str, re.findall('board=\"(.+?)\"', i)))
-      interface=''.join(map(str, re.findall('interface=(.+?)\s', i)))
-      print(f'host {ansible_host} role {role} int {interface}')
-      for role_ in vars["roles"]:
-         if role[-1] == role_["role"]:
-            role = role["role"]
-      for arch in vars["architectures"]:
-         if arch["arch"] in resuorce[0]:
-            group=arch["arch_group"]
-      for interface_ in vars["exclude_interfaces"]:
-         if interface_ in interface:
+    for entry in entries:
+        if not entry.strip():
             continue
-         inv[group]['hosts'].update({identity: {}})
-         inv[group]['hosts'][identity].update({'ansible_host': ansible_host })
-         inv[group]['hosts'][identity].update({'version': version })
-         inv[group]['hosts'][identity].update({'identity': identity })
-         inv[group]['hosts'][identity].update({'role': role })
-         inv[group]['hosts'][identity].update({'architecture': resuorce[0]})
-         inv[group]['hosts'][identity].update({'board': resuorce[1]})
-  return inv
+
+        try:
+            identity_match = re.search(r'identity="(.+?)"', entry)
+            ip_match = re.search(r'address=(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', entry)
+            version_match = re.search(r'version="(\d+(?:\.\d+)+)', entry)
+            interface_match = re.search(r'interface=(.+?)\s', entry)
+
+            if not all([identity_match, ip_match, version_match, interface_match]):
+                logger.warning(f"Incomplete neighbor entry: {entry}")
+                continue
+
+            identity = identity_match.group(1)
+            ip = ip_match.group(1)
+            version = version_match.group(1)
+            interface = interface_match.group(1)
+
+            devices.append({
+                'identity': identity,
+                'ip': ip,
+                'version': version,
+                'interface': interface,
+            })
+        except Exception as e:
+            logger.error(f"Error parsing neighbor entry: {entry} | Error: {str(e)}")
+
+    return devices
 
 
-inventory = {'all':{}}
-inventory['all'].update({'vars':{}})
-inventory['all']['vars'].update({'ansible_connection': 'ansible.netcommon.network_cli'})
-inventory['all']['vars'].update({'ansible_network_os': 'community.routeros.routeros'})
-inventory['all']['vars'].update({'ansible_user': '{{ user }}'})
-inventory['all']['vars'].update({'ansible_ssh_pass': '{{ password }}'})
-inventory['all']['vars'].update({'host_key_checking': 'False'})
-inventory['all'].update({'children':{}})
+def generate_inventory_structure():
+    """Базовая структура инвентаря Ansible"""
+    return {
+        'all': {
+            'vars': {
+                'ansible_connection': 'ansible.netcommon.network_cli',
+                'ansible_network_os': 'community.routeros.routeros',
+                'ansible_user': '{{ user }}',
+                'ansible_ssh_pass': '{{ password }}',
+                'host_key_checking': 'False'
+            },
+            'children': {}
+        }
+    }
 
 
-for key,value in main.items():
-  if key != 'vars':
-    inventory_ = make_inventory(group=key,
-                    name=value["name"],
-                    host=value["host"],
-                    user=vars["user"],
-                    password=vars["password"]
-                     )
-  inventory['all']['children'].update(inventory_)
+def determine_role(identity, roles):
+    """Определение роли устройства на основе identity и списка ролей"""
+    if not identity:
+        return 'unknown'
+
+    # Берем последний символ identity для определения роли
+    role_char = identity[-1]
+
+    for role_def in roles:
+        if role_def['tag'] == role_char:
+            return role_def['role']
+        else:
+            return role_def['role_def']
+
+    return 'unknown'
 
 
-with open('/var/opt/ansible/inventory/dyn_inven.yaml','w') as y:
-   yaml.dump(inventory, y)
-with open('./dyn_inven.yaml','w') as y:
-   yaml.dump(inventory, y)
+def main():
+    # Загрузка основного инвентаря
+    try:
+        with open(INVENTORY_FILE) as f:
+            main_inventory = yaml.safe_load(f)
+    except Exception as e:
+        logger.error(f"Failed to load inventory file: {str(e)}")
+        return
+
+    global_vars = main_inventory.get("vars", {})
+    inventory = generate_inventory_structure()
+
+    # Обработка устройств из main_host.yaml
+    for group_name, group_data in main_inventory.items():
+        if group_name == "vars":
+            continue
+
+        if not isinstance(group_data, dict):
+            logger.warning(f"Skipping invalid group entry: {group_name}")
+            continue
+
+        host = group_data.get("host")
+        name = group_data.get("name")
+
+        if not host or not name:
+            logger.warning(f"Skipping group {group_name} due to missing host or name")
+            continue
+
+        username = global_vars.get("user", "")
+        password = global_vars.get("password", "")
+
+        # Информация о главном устройстве
+        device_info = get_device_info(host, username, password)
+
+        # Добавление главного устройства
+        group_key = f"group_{group_name}"
+        inventory['all']['children'].setdefault(group_key, {'hosts': {}})
+        inventory['all']['children'][group_key]['hosts'][name] = {
+            'ansible_host': host,
+            'version': device_info['version'],
+            'identity': name,
+            'role': 'root',
+            'architecture': device_info['arch'],
+            'board': device_info['board']
+        }
+        logger.info(f"Added main device: {name} ({host}) to group {group_key}")
+
+        # Обработка соседних устройств
+        neighbors = get_neighbors(host, username, password)
+        exclude_interfaces = global_vars.get("exclude_interfaces", [])
+        roles = global_vars.get("roles", [])
+        architectures = global_vars.get("architectures", [])
+
+        for neighbor in neighbors:
+            if neighbor['interface'] in exclude_interfaces:
+                logger.info(f"Skipping neighbor {neighbor['ip']} on excluded interface {neighbor['interface']}")
+                continue
+
+            # Определение роли по последнему символу identity
+            role = determine_role(neighbor['identity'], roles)
+
+            # Получаем информацию о железе соседнего устройства
+            neighbor_info = get_device_info(neighbor['ip'], username, password)
+
+            # Определение группы по архитектуре
+            arch_group = 'default'
+            for arch in architectures:
+                if arch['arch'] in neighbor_info['arch']:
+                    arch_group = arch['arch_group']
+                    break
+
+            # Добавление в инвентарь
+            inventory['all']['children'].setdefault(arch_group, {'hosts': {}})
+            inventory['all']['children'][arch_group]['hosts'][neighbor['identity']] = {
+                'ansible_host': neighbor['ip'],
+                'version': neighbor['version'],
+                'identity': neighbor['identity'],
+                'role': role,
+                'architecture': neighbor_info['arch'],
+                'board': neighbor_info['board']
+            }
+            logger.info(f"Added neighbor: {neighbor['ip']} | Role: {role} | Interface: {neighbor['interface']}")
+
+    # Сохранение результатов
+    for file_path in [OUTPUT_INVENTORY, BACKUP_INVENTORY]:
+        try:
+            with open(file_path, 'w') as f:
+                yaml.dump(inventory, f)
+            logger.info(f"Inventory saved to {file_path}")
+        except Exception as e:
+            logger.error(f"Failed to save inventory to {file_path}: {str(e)}")
+
+
+if __name__ == "__main__":
+    main()
