@@ -61,6 +61,7 @@ python create_mikrotik_inventory.py
 
 bash
 ansible-playbook -i /var/opt/ansible/inventory/dyn_inven.yaml playbook.yml
+
 #### Советы
 
 Для критически важных систем укажите абсолютные пути для output_inventory
