@@ -18,7 +18,8 @@
 :if $est do={/ip/firewall/mangle/ set comment="EST,REL" $est} else={/ip/firewall/mangle/ add action=accept chain=prerouting connection-state=established,related comment="EST,REL"};
 
 :if $jmprule do={/ip/firewall/mangle/ set comment="jmprule for fail2ban $dstport" $jmprule} else={
-/ip/firewall/mangle/ add action=jump chain=prerouting connection-state=new dst-port=$dstport jump-target="fail2ban_$dstport" protocol=$proto comment="jmprule for fail2ban $dstport"
+/ip/firewall/mangle/ add action=jump chain=prerouting connection-state=new protocol=$proto dst-port=$dstport in-interface-list=$ISPinterfaceList 
+                     jump-target="fail2ban_$dstport" comment="jmprule for fail2ban $dstport"
 };
 
 /ip/firewall/mangle/ add action=add-src-to-address-list address-list="attacker_blacklist_$dstport"
