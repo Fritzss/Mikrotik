@@ -1,0 +1,124 @@
+#                                    __   __  __
+#                                    \ \ / / / /
+#                                     \ V / / /
+#                                      \_/  \/
+#
+#                                    V E C T O R
+#                                   Configuration
+#
+# ------------------------------------------------------------------------------
+# Website: https://vector.dev
+# Docs: https://vector.dev/docs
+# Chat: https://chat.vector.dev
+# ------------------------------------------------------------------------------
+
+# Change this to use a non-default directory for Vector data storage:
+# data_dir: "/var/lib/vector"
+
+# Random Syslog-formatted logs
+
+data_dir: /var/lib/vector
+timezone: Europe/Moscow
+api:
+  enabled: true
+  address: '0.0.0.0:8686'
+
+sources:
+  journald:
+    type: journald
+    batch_size: 32
+
+  docker:
+    type: docker_logs
+
+  extlogs:
+    type: socket
+    address: '0.0.0.0:41514'
+    mode: udp
+    decoding:
+      codec: bytes
+
+  vector_metrics:
+    type: internal_metrics
+
+
+transforms:
+  firewall:
+    type: remap
+    inputs:
+      - extlogs
+    timezone: local
+    file: /etc/vector/vrl/ros_firewall.vrl
+
+
+#  drop_table_err:
+#    type: filter
+#    inputs:
+#      - dns
+#      - firewall
+#    condition: .table != "err"
+
+  add_table_journald:
+    type: remap
+    inputs:
+      - journald
+    source: |-
+      .table="systemd"
+  add_table_docker:
+    type: remap
+    inputs:
+      - docker
+    source: |-
+      .table="docker"
+
+
+  dedup:
+    type: dedupe
+    inputs:
+      - add_table_docker
+      - add_table_journald
+    fields:
+      match:
+       - message
+    cache:
+      num_events: 600
+
+sinks:
+  vectoriametrics:
+    type: prometheus_exporter
+    inputs:
+      - vector_metrics
+    address: 0.0.0.0:9598
+    flush_period_secs: 60
+
+  ch-ros:
+    type: clickhouse
+    inputs:
+      - dedup
+      - firewall
+    endpoint: 'http://127.0.0.1:8321'
+    database: logs
+    table: "{{ .table }}"
+    skip_unknown_fields: true
+    encoding:
+      timestamp_format: unix
+    buffer:
+      type: memory
+      max_events: 30000
+      when_full: block
+    batch:
+      max_events: 50000
+    acknowledgements:
+      enabled: false
+    request:
+      concurrency: adaptive
+    healthcheck:
+      enabled: false
+
+#  print:
+#    type: console
+#    inputs: [drop_table_err]
+#    encoding:
+#      codec: "json"
+#      json:
+#        pretty: true
