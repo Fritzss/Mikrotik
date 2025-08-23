@@ -1,16 +1,81 @@
-. |=parse_regex!(.message, r'(?P<Topics>\S+)')
-del(.source_type)
-del(.port)
+message_parts, err=split(.message, " ", limit: 2)
+.table="ros"
+.Topics, err = string(message_parts[0])
+.message, err = string(message_parts[1])
+# block firewall
 if match(.Topics, r'.*firewall.*') {
-. |=parse_regex!(.message, r'\s(?P<prefix>\S+)\s(?P<chain>\S+)')
-. |=parse_regex!(.message, r'\w+:\s(?<message>.*)')
-if match(.chain, r'.*srcnat.*') {
-. |= parse_regex!(.message, r'(?P<in>\(\w+\s\d+\)|\w+)\sout:(?P<out>\(\w+\s\d+\)|\w+),.*(?P<protocol>TCP|UDP|ICMP).*,\s(?P<ip1>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(?P<port1>\d+)(?P<diretion>->|-<)(?P<ip2>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(?P<port2>\d+)')
-del(.message)
-} else {
-. |=parse_regex!(.message, r'in:(?P<in>\(\w+\s\d+\)|\w+)\sout:(?P<out>\(\w+\s\d+\)|\w+),.*\s(?P<srcmac>.{2}:.{2}:.{2}:.{2}:.{2}:.{2}),.*(?P<protocol>UDP|TCP|ICMP).*,\s(?P<ip1>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(?P<port1>\d+)(?P<direction>->|-<)(?P<ip2>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(?P<port2>\d+)')
-del(.message)
+    message_parts_1 = split(.message, ":", limit: 2)
+    .prefix =  message_parts_1[0]
+    message_parts_2, err = split(.prefix, " ", limit: 2)
+    .prefix = message_parts_2[0]
+    .chain = message_parts_2[1]
+    .chain = string!(.chain)
+    .message = strip_whitespace!(message_parts_1[1])
+    resultfw, err = parse_regex(.message, r'in:(?P<in>.*) out:(?P<out>.+),.* connection-state:(?P<conn_state>\w{0,40}).* (?P<protocol>TCP|UDP|ICMP|\d{1,3}).* (?P<ip1>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*(?P<direction>->|-<)(?P<ip2>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(?P<port>\d{1,5})')
+    if err == null {
+        . = merge(., resultfw)
+        .table = "firewall"
+        del(.message)
+      } else {
+    resultfw, err = parse_regex(.message, r'in:(?P<in>.*) out:(?P<out>.+),.* (?P<protocol>TCP|UDP|ICMP|\d{1,3}).* (?P<ip1>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*(?P<direction>->|-<)(?P<ip2>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(?P<port>\d{1,5})')
+    if err == null {
+        .message = del(.message)
+        . = merge(., resultfw)
+        .table = "firewall"
+        del(.message)
+      } else {
+    resultfw, err = parse_regex(.message, r'in:(?P<in>.*) out:(?P<out>.+),.* (?P<protocol>TCP|UDP|ICMP).* (?P<ip1>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*(?P<direction>->|-<)(?P<ip2>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})')
+    if err == null {
+        . = merge(., resultfw)
+        .table = "firewall"
+        del(.message)
+      } else {
+     if err != null {
+          .message = "MESS: " + .message + ", ERR: " + err
+          .table = "ros"
+         }
+      }
+    }
+  }
 }
-} else {
-. |=parse_regex!(.message, r'\s(?<message>.*)')
+
+# block dns
+if match(.Topics, r'.*dns.*') {
+#   del(.port)
+   .check = .Topics
+   .message = to_string!(.message)
+   result, err = parse_regex(.message, r'query from\s(?P<ip>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*:.*\#\d{1,10}\s(?P<FQDN>.+)\.')
+   if err == null {
+    . = merge(., result)
+    .table = "dns"
+    del(.message)
+    del(.port)
+    del(.source_type)
+    del(.Topics)
+
+   } else {
+   result, err = parse_regex(.message, r'done query:\s#\d{1,10}\s(?P<FQDN>.+\..+)\s(?P<ip>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})')
+   if err == null {
+    . = merge(., result)
+    del(.message)
+    del(.port)
+    del(.source_type)
+    del(.Topics)
+    .table = "dns"
+   } else {
+   result, err = parse_regex(.message, r'\<(?P<FQDN>.+\..+)\.\:A\:\d{1,8}\=(?P<ip>\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})')
+   if err == null {
+    . = merge(., result)
+    .table = "dns"
+    del(.port)
+    del(.source_type)
+    del(.Topics)
+    del(.message)
+   } else {
+   if err != null {
+        .table = "ros"
+        }
+      }
+    }
+  }
 }
