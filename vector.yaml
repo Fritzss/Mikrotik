@@ -81,7 +81,7 @@ transforms:
       match:
        - message
     cache:
-      num_events: 600
+      num_events: 6000
 
 sinks:
   vectoriametrics:
