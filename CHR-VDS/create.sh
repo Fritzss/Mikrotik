@@ -2,7 +2,7 @@ VERSION="7.20"
 USER="<user_name>"
 PASSWORD="<super_password>"
 
-mount -t tmpfs tmpfs /tmp/
+sudo mount -t tmpfs tmpfs /tmp/
 
 wget https://download.mikrotik.com/routeros/$VERSION/chr-$VERSION.img.zip
 sudo apt-get install unzip
@@ -22,10 +22,10 @@ sudo cat <<EOF> /mnt/chr/rw/autorun.scr
 ## add other command
 EOF
 
-umount /mnt/chr
-echo u > /proc/sysrq-trigger
+sudo umount /mnt/chr
+sudo echo u > /proc/sysrq-trigger
 
-dd if=chr-$VERSION.img of=$DISK bs=4M oflag=sync
+sudo dd if=chr-$VERSION.img of=$DISK bs=4M oflag=sync
 
-echo 1 > /proc/sys/kernel/sysrq
-echo b > /proc/sysrq-trigger
+sudo echo 1 > /proc/sys/kernel/sysrq
+sudo echo b > /proc/sysrq-trigger
