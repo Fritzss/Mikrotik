@@ -1,4 +1,4 @@
-VERSION=
+VERSION="7.20" 
 USER="<user_name>"
 PASSWORD="<super_password>"
 
@@ -21,6 +21,9 @@ sudo cat <<EOF> /mnt/chr/rw/autorun.scr
 /user add $USER password $PASSWORD
 ## add other command
 EOF
+
+umount /mnt/chr
+echo u > /proc/sysrq-trigger
 
 dd if=chr-$VERSION.img of=$DISK bs=4M oflag=sync
 
