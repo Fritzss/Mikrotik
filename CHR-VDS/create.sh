@@ -13,11 +13,11 @@ DISK=$(fdisk -l | grep -i "disk /dev/" | awk -F ' ' '{print $2}')
 DISK="${DISK: :-1}"
 sudo mkdir -p /mnt/chr
 
-SS=$(fdisk -lu chr-7.20.img | grep -i "sector size" | awk -F ' ' '{print $4}')
-FS=$(fdisk -lu chr-7.20.img | grep -i "img2" | awk -F ' ' '{print $2}')
+SS=$(fdisk -lu chr-${VERSION}.img | grep -i "sector size" | awk -F ' ' '{print $4}')
+FS=$(fdisk -lu chr-${VERSION}.img | grep -i "img2" | awk -F ' ' '{print $2}')
 OFFSET=$(( $SS * $FS ))
 
-sudo mount -o loop,offset=$OFFSET chr-7.20.img /mnt/chr
+sudo mount -o loop,offset=$OFFSET chr-${VERSION}.img /mnt/chr
 
 sudo cat <<EOF> /mnt/chr/rw/autorun.scr
 /user add $USER password $PASSWORD
